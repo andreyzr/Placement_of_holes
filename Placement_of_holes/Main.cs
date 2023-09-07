@@ -1,6 +1,7 @@
 ﻿using Autodesk.Revit.Attributes;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.Mechanical;
+using Autodesk.Revit.DB.Plumbing;
 using Autodesk.Revit.DB.Structure;
 using Autodesk.Revit.UI;
 using Autodesk.Revit.UI.Selection;
@@ -14,37 +15,50 @@ namespace Placement_of_holes
 {
     [Transaction(TransactionMode.Manual)]
     public class Main : IExternalCommand
+
     {
         public Result Execute(ExternalCommandData commandData, ref string message, ElementSet elements)
         {
             Document arDoc = commandData.Application.ActiveUIDocument.Document;
-            Document ovDoc = arDoc.Application.Documents.OfType<Document>().Where(x=>x.Title.Contains("ОВ")).FirstOrDefault();
-            if(ovDoc == null)
+            Document ovDoc = arDoc.Application.Documents.OfType<Document>().Where(x => x.Title.Contains("ОВ")).FirstOrDefault();
+            if (ovDoc == null)
             {
                 TaskDialog.Show("Ошибка", "Не найден ОВ файл");
                 return Result.Cancelled;
             }
 
-            FamilySymbol familySymbol=new FilteredElementCollector(arDoc)
+            Document vkDoc = arDoc.Application.Documents.OfType<Document>().Where(x => x.Title.Contains("ВК")).FirstOrDefault();
+            if (ovDoc == null)
+            {
+                TaskDialog.Show("Ошибка", "Не найден ВК файл");
+                return Result.Cancelled;
+            }
+
+            FamilySymbol familySymbol = new FilteredElementCollector(arDoc)
                 .OfClass(typeof(FamilySymbol))
                 .OfCategory(BuiltInCategory.OST_GenericModel)
                 .OfType<FamilySymbol>()
-                .Where(x=>x.Name.Equals("Отверстие"))
+                .Where(x => x.FamilyName.Equals("Отверстиe"))
                 .FirstOrDefault();
             if (familySymbol == null)
             {
-                TaskDialog.Show("Ошибка", "Не найден семейство\"Отверстия\"");
+                TaskDialog.Show("Ошибка", "Не найден семейство\"Отверстие\"");
                 return Result.Cancelled;
             }
-            List<Duct> ducts=new FilteredElementCollector(ovDoc)
+            List<Duct> ducts = new FilteredElementCollector(ovDoc)//Поиск воздуховодов
                 .OfClass(typeof(Duct))
                 .OfType<Duct>()
                 .ToList();
 
-            View3D view3D=new FilteredElementCollector(arDoc)
+            List<Pipe> pipes = new FilteredElementCollector(vkDoc)//Поиск труб
+                    .OfClass(typeof(Pipe))
+                    .OfType<Pipe>()
+                    .ToList();
+
+            View3D view3D = new FilteredElementCollector(arDoc)
                 .OfClass(typeof(View3D))
                 .OfType<View3D>()
-                .Where(x=>!x.IsTemplate)//Проверка что 3D вид не является шаблоном вида
+                .Where(x => !x.IsTemplate)//Проверка что 3D вид не является шаблоном вида
                 .FirstOrDefault();
             if (view3D == null)
             {
@@ -54,9 +68,45 @@ namespace Placement_of_holes
 
             ReferenceIntersector referenceIntersector = new ReferenceIntersector(new ElementClassFilter(typeof(Wall)), FindReferenceTarget.Element, view3D);
 
+            Transaction transaction0 = new Transaction(arDoc);
+            transaction0.Start("Расстановка отверстий");
+
+            if (!familySymbol.IsActive)
+            {
+                familySymbol.Activate();
+            }
+            transaction0.Commit();
+
+
             Transaction transaction = new Transaction(arDoc);
             transaction.Start("Расстановка отверстий");
-            foreach (Duct duct in ducts)
+
+            foreach (Pipe pipe in pipes) //Растановка отверстий для трую
+            {
+                Line curve = (pipe.Location as LocationCurve).Curve as Line;
+                XYZ point = curve.GetEndPoint(0);
+                XYZ direction = curve.Direction;
+                List<ReferenceWithContext> intersection = referenceIntersector.Find(point, direction)
+                    .Where(x => x.Proximity <= curve.Length)
+                    .Distinct(new ReferenceWithContextElementEqualityComparer())
+                    .ToList();
+                foreach (ReferenceWithContext refer in intersection)
+                {
+                    double proximity = refer.Proximity;
+                    Reference reference = refer.GetReference();
+                    Wall wall = arDoc.GetElement(reference.ElementId) as Wall;
+                    Level level = arDoc.GetElement(wall.LevelId) as Level;
+                    XYZ pointHole = point + (direction * proximity);
+
+                    FamilyInstance hole = arDoc.Create.NewFamilyInstance(pointHole, familySymbol, wall, level, StructuralType.NonStructural);
+                    Parameter width = hole.LookupParameter("ADSK_Размер_Ширина");
+                    Parameter hight = hole.LookupParameter("ADSK_Размер_Высота");
+                    width.Set(pipe.Diameter);
+                    hight.Set(pipe.Diameter);
+                }
+            }
+
+            foreach (Duct duct in ducts) //Растановка отверстий для воздуховода
             {
                 Line curve = (duct.Location as LocationCurve).Curve as Line;
                 XYZ point = curve.GetEndPoint(0);
@@ -70,16 +120,17 @@ namespace Placement_of_holes
                     double proximity = refer.Proximity;
                     Reference reference = refer.GetReference();
                     Wall wall = arDoc.GetElement(reference.ElementId) as Wall;
-                    Level level=arDoc.GetElement(wall.LevelId) as Level;
+                    Level level = arDoc.GetElement(wall.LevelId) as Level;
                     XYZ pointHole = point + (direction * proximity);
 
                     FamilyInstance hole = arDoc.Create.NewFamilyInstance(pointHole, familySymbol, wall, level, StructuralType.NonStructural);
-                    Parameter width=hole.LookupParameter("Шириная");
-                    Parameter hight=hole.LookupParameter("Высота");
+                    Parameter width = hole.LookupParameter("ADSK_Размер_Ширина");
+                    Parameter hight = hole.LookupParameter("ADSK_Размер_Высота");
                     width.Set(duct.Diameter);
                     hight.Set(duct.Diameter);
                 }
             }
+
             transaction.Commit();
             return Result.Succeeded;
         }
