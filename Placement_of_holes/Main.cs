@@ -81,7 +81,7 @@ namespace Placement_of_holes
             Transaction transaction = new Transaction(arDoc);
             transaction.Start("Расстановка отверстий");
 
-            foreach (Pipe pipe in pipes) //Растановка отверстий для трую
+            foreach (Pipe pipe in pipes) //Растановка отверстий для труб
             {
                 Line curve = (pipe.Location as LocationCurve).Curve as Line;
                 XYZ point = curve.GetEndPoint(0);
